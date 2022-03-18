@@ -1,0 +1,18 @@
+[package]
+name = "flashy64"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+libftd2xx = { version = "0.32", features = ["static"] }
+bytes = "1.1"
+
+clap = { version = "3.1", optional = true }
+
+[features]
+build-binary = ["clap"]
+
+[[bin]]
+name = "flashy64"
+required-features = ["build-binary"]
