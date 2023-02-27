@@ -1,0 +1,19 @@
+[package]
+name = "flashy64-backend"
+version = "0.1.0"
+edition = "2021"
+authors = ["Luke Stadem <bigbass1997.website@gmail.com>"]
+description = "Support library for interfacing with N64 flashcarts."
+license = "MIT"
+repository = "https://github.com/bigbass1997/flashy64"
+keywords = ["n64", "flashcart", "rom"]
+categories = ["command-line-utilities", "development-tools", "game-development"]
+
+[dependencies]
+libftd2xx = { version = "0.32", features = ["static"] }
+bytes = "1.1"
+crc = "2.1"
+log = "0.4"
+lazy_static = "1.4"
+md5 = "0.7"
+num_enum = "0.5"

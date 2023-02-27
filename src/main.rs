@@ -1,93 +1,66 @@
-
-use clap::{AppSettings, Arg, Command};
-use crc::{Crc, CRC_32_ISO_HDLC};
-use libftd2xx::{Ftdi, FtdiCommon};
 use std::io::Write;
+use std::path::PathBuf;
+use bpaf::Bpaf;
 use env_logger::Builder;
 use env_logger::fmt::Color::*;
-use log::{error, info, LevelFilter, warn};
-use log::Level::*;
-use flashy64::cart::{Cic, SaveType, Segment, SixtyFourDrive};
+use log::{debug, error, info, LevelFilter, warn};
+use flashy64_backend::carts::{Cic, SaveType};
+use flashy64_backend::Error;
+
+#[derive(Debug, Bpaf)]
+#[bpaf(options, version, generate(args))]
+struct Args {
+    /// Upload file at this path to the cartridge's ROM space.
+    #[bpaf(long, short)]
+    upload: Option<PathBuf>,
+    
+    /// Specifies which CIC variant should be used. Note! 64drive HW1 does not support setting the CIC.
+    ///   Options: auto, 6101, 6102, 7101, 7102, x103, x105, x106, or 5101
+    #[bpaf(long, short)]
+    cic: Option<Cic>,
+    
+    /// Specifies which cartridge savetype the rom expects. Autodetection requires --upload to be used.
+    ///   Options: auto, eeprom4kbit, eeprom16kbit, sram256kbit, flashram1mbit, sram768kbit, pokestadium2, or none
+    #[bpaf(long, short)]
+    savetype: Option<SaveType>,
+    
+    /// List available USB devices.
+    #[bpaf(long, short)]
+    list: bool,
+    
+    /// Specify the device to use, by its serial number. Otherwise the first valid device is used by default.
+    #[bpaf(long, short)]
+    device: Option<String>,
+    
+    /// Enables UNFLoader support. Program will stay open until the user quits (CTRL+C).
+    ///   (Sending data via UNFLoader to cartridge is not supported yet)
+    #[bpaf(long)]
+    unf: bool,
+    
+    /// On linux, the default ftdi_sio driver conflicts with D2XX. This command requires sudo, and will save
+    /// a blacklist command to /etc/modprobe.d/ftdi_sio-blacklist.conf, to automatically disable ftdi_sio when a
+    /// flashcart is plugged in. Otherwise you will be required to run 'sudo rmmod ftdi_sio' whenever connecting a flashcart.
+    #[cfg(target_os = "linux")]
+    #[bpaf(long)]
+    disable_sio: bool,
+    
+    /// Set the console log level. Environment variable 'RUST_LOG' will override this option.
+    ///   Options: error, warn, info, debug, trace
+    #[bpaf(long, short)]
+    verbose: Option<LevelFilter>,
+}
 
 fn main() {
-    let matches = Command::new("flashy64")
-        .arg(Arg::new("upload")
-            .long("upload")
-            .takes_value(true)
-            .help("ROM file path to upload to device."))
-        .arg(Arg::new("download")
-            .long("download")
-            .takes_value(true)
-            .help("Downloads ROM and saves to provided path."))
-        .arg(Arg::new("length")
-            .long("length")
-            .short('l')
-            .takes_value(true)
-            .help("Length, in bytes, of data to download. Only applies to --download operations. If omitted, 33554432 bytes (32 MiB) will be used."))
-        .arg(Arg::new("cic")
-            .long("cic")
-            .takes_value(true)
-            .default_missing_value("auto")
-            .help("Specifies which CIC variant should be used. Include this argument without a value to attempt automatic CIC detection. Note! 64drive HW1 does not support setting the CIC.")
-            .possible_values(["auto", "6101", "6102", "7101", "7102", "x103", "x105", "x106", "5101"]))
-        .arg(Arg::new("savetype")
-            .long("savetype")
-            .takes_value(true)
-            .default_missing_value("auto")
-            .help("Specifies which cartridge savetype the rom expects. Include this argument without a value to attempt automatic savetype detection. Autodetection requires --upload to be used.")
-            .possible_values(["auto", "none", "eeprom4kbit", "eeprom16kbit", "sram256kbit", "flashram1mbit", "sram768kbit", "pokestadium2"]))
-        .arg(Arg::new("calc-crc")
-            .long("calc-crc")
-            .takes_value(true)
-            .hide(true))
-        .arg(Arg::new("list")
-            .long("list")
-            .help("List available devices."))
-        .arg(Arg::new("device")
-            .short('d')
-            .long("device")
-            .takes_value(true)
-            .help("Specify the device to use, by its serial number. Otherwise the first valid device is used."))
-        .arg(Arg::new("disable-sio")
-            .long("disable-sio")
-            .help("On linux, the default ftdi_sio driver conflicts with D2XX. This command requires sudo, and will save \
-             a blacklist command to /etc/modprobe.d/ftdi_sio-blacklist.conf, to automatically disable ftdi_sio when a \
-             flashcart is plugged in. Otherwise you will be required to run 'sudo rmmod ftdi_sio' whenever connecting a flashcart."))
-        .arg(Arg::new("verbose")
-            .short('v')
-            .long("verbose")
-            .takes_value(true)
-            .possible_values(["error", "warn", "info", "debug", "trace"])
-            .help("Set the console log level. Environment variable 'RUST_LOG' will override this option."))
-        .next_line_help(true)
-        .arg_required_else_help(true)
-        .setting(AppSettings::DeriveDisplayOrder)
-        .get_matches();
+    let args: Args = args().run();
     
-    let level = match std::env::var("RUST_LOG").unwrap_or(matches.value_of("verbose").unwrap_or("info").to_owned()).as_str() {
-        "error" => LevelFilter::Error,
-        "warn" => LevelFilter::Warn,
-        "info" => LevelFilter::Info,
-        "debug" => LevelFilter::Debug,
-        "trace" => LevelFilter::Trace,
-        _ => LevelFilter::Info
-    };
     {
         let mut logbuilder = logger_builder();
-        logbuilder.filter_level(level);
+        logbuilder.filter_level(args.verbose.unwrap_or(LevelFilter::Info));
         logbuilder.init();
     }
     
-    
-    
-    if let Some(path) = matches.value_of("calc-crc") {
-        let mut data = std::fs::read(path).unwrap();
-        data.resize(0x1000, 0);
-        info!("{:#010X}", Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(&data[0x40..]));
-        return;
-    }
-    
-    if matches.is_present("disable-sio") {
+    #[cfg(target_os = "linux")]
+    if args.disable_sio {
         match std::fs::write("/etc/modprobe.d/ftdi_sio-blacklist.conf", "# Generated by flashy64 to fix compatibility issue between FTDI 2DXX driver and ftdi_sio\nblacklist ftdi_sio") {
             Ok(()) => info!("File written. Any currently connected flashcarts should be unplugged, and reconnected."),
             Err(err) => match err.kind() {
@@ -98,12 +71,17 @@ fn main() {
         return;
     }
     
-    if matches.is_present("list") {
-        if let Ok(carts) = flashy64::list_carts() {
-            for mut cart in carts {
-                let info = cart.device().device_info().unwrap();
-                //TODO: Print version info using VERSION_REQUEST command function
-                info!("{}", info.serial_number);
+    if args.list {
+        if let Ok(carts) = flashy64_backend::carts() {
+            if !carts.is_empty() {
+                info!("Available flashcarts:");
+                for mut cart in carts {
+                    let info = cart.info().unwrap();
+                    //TODO: Print version info using VERSION_REQUEST command function
+                    info!("{} : {}", info.serial_number, info.description);
+                }
+            } else {
+                info!("No flashcarts available. If you believe this is wrong, try running with the `-v debug` option, and see if any devices are in use (port_open == true).");
             }
         }
         
@@ -111,62 +89,48 @@ fn main() {
     }
     
     
-    let device = match matches.value_of("device") {
-        Some(serial) => Some(Ftdi::with_serial_number(serial).unwrap()),
-        None => None
-    };
-    let mut cart = match device {
-        Some(device) => match SixtyFourDrive::new(device) {
-            Ok(cart) => cart,
-            Err(err) => panic!("Failed to initialize cartridge with specified device: {:?}", err)
-        },
-        None => match flashy64::list_carts() {
-            Ok(carts) => match carts.into_iter().next() {
-                Some(cart) => cart,
-                None => panic!("No valid cartridges found.")
-            },
-            Err(_) => panic!("No valid cartridges found.")
+    let mut cart = match args.device {
+        Some(serial) => flashy64_backend::from_serial(serial).expect("Failed to open device with serial: {serial}"),
+        None => {
+            debug!("Defaulting to first valid device...");
+            
+            let mut carts = flashy64_backend::carts().expect("Failed to retrieve device list");
+            if carts.is_empty() {
+                panic!("No flashcarts available. If you believe this is wrong, try running with the `-v debug` option, and see if any devices are in use (port_open == true).");
+            }
+            
+            carts.remove(0)
         }
     };
     
-    if let Some(path) = matches.value_of("upload") {
+    if let Some(ref path) = args.upload {
         let data = std::fs::read(path).unwrap();
-        match cart.upload(Segment::Rom, 0, data) {
+        
+        match cart.upload_rom(&data) {
             Ok(_) => info!("ROM Upload Complete."),
             Err(err) => error!("Err: {:?}", err)
         }
     }
     
-    if let Some(path) = matches.value_of("download") {
-        let len = matches.value_of("length").unwrap_or("33554432").parse();
-        if let Err(err) = len { panic!("Failed to parse length! Operation canceled. Please only use decimal whole numbers, without commas. {}", err); }
-        let len = len.unwrap();
-        
-        let data = cart.download(Segment::Rom, 0, len).unwrap();
-        std::fs::write(path, data).unwrap();
-    }
-    
-    if let Some(cic) = matches.value_of("cic") {
-        let mut cic = Cic::from_str(cic);
+    if let Some(mut cic) = args.cic {
         if cic == Cic::Auto {
-            let mut ipl3 = cart.download(Segment::Rom, 0, 0x1000).unwrap_or_default();
+            let mut ipl3 = cart.download_rom(0x1000).unwrap_or_default();
             ipl3.resize(0x1000, 0x00);
             cic = Cic::from_ipl3(&ipl3[0x40..]);
         }
         
         match cic {
             Cic::Unknown | Cic::Auto => error!("Unable to determine CIC type index."),
-            _ => match cart.cic(cic.index().unwrap()) {
+            _ => match cart.set_cic(cic) {
                 Ok(_) => info!("CIC Configured."),
                 Err(err) => error!("Err: {:?}", err)
             }
         }
     }
     
-    if let Some(savetype) = matches.value_of("savetype") {
-        let mut savetype = SaveType::from_str(savetype);
+    if let Some(mut savetype) = args.savetype {
         if savetype == SaveType::Auto {
-            if let Some(path) = matches.value_of("upload") {
+            if let Some(ref path) = args.upload {
                 let data = std::fs::read(path).unwrap();
                 savetype = SaveType::from_rom(&data);
             } else {
@@ -176,10 +140,28 @@ fn main() {
         }
         
         match savetype {
-            SaveType::Unknown | SaveType::Auto => error!("Unable to determine SaveType index."),
-            _ => match cart.savetype(savetype.index().unwrap()) {
+            SaveType::Unknown => (),
+            SaveType::Auto => error!("Unable to determine SaveType index."),
+            _ => match cart.set_savetype(savetype) {
                 Ok(_) => info!("SaveType Configured."),
                 Err(err) => error!("Err: {:?}", err)
+            }
+        }
+    }
+    
+    if args.unf {
+        loop {
+            use flashy64_backend::unfloader::DataType::*;
+            
+            match cart.recv_debug() {
+                Ok((kind, data)) => match kind {
+                    Text => print!("{}", std::str::from_utf8(&data).unwrap_or_default()),
+                    _ => println!("Unsupported data type: {kind:?}")
+                },
+                Err(err) => match err {
+                    Error::FtdiTimeout(_) => continue,
+                    _ => panic!("{err:?}"),
+                }
             }
         }
     }
@@ -192,6 +174,7 @@ fn logger_builder() -> Builder {
     let mut builder = Builder::new();
     
     builder.format(|f, record| {
+        use log::Level::*;
         
         let mut style = f.style();
         let level = match record.level() {

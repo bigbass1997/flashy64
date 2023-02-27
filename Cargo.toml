@@ -1,23 +1,22 @@
 [package]
 name = "flashy64"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-
+authors = ["Luke Stadem <bigbass1997.website@gmail.com>"]
+description = "CLI tool for interfacing with N64 flashcarts."
+license = "MIT"
+repository = "https://github.com/bigbass1997/flashy64"
+keywords = ["n64", "flashcart", "rom"]
+categories = ["command-line-utilities", "development-tools", "game-development"]
 
 [dependencies]
-libftd2xx = { version = "0.32", features = ["static"] }
-bytes = "1.1"
-crc = "2.1"
+flashy64-backend = { path = "./flashy64-backend", version = "0.1.0" }
 log = "0.4"
-lazy_static = "1.4"
-md5 = "0.7"
+env_logger = "0.9"
+bpaf = { version = "0.7", features = ["derive"] }
+crossterm = "0.23"
 
-env_logger = { version = "0.9", optional = true }
-clap = { version = "3.1", optional = true }
-
-[features]
-build-binary = ["clap", "env_logger"]
-
-[[bin]]
-name = "flashy64"
-required-features = ["build-binary"]
+[workspace]
+members = [
+    "flashy64-backend"
+]
